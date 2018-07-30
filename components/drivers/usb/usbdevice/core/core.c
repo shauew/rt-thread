@@ -166,7 +166,7 @@ static rt_err_t _get_qualifier_descriptor(struct udevice* device, ureq_t setup)
     RT_ASSERT(device != RT_NULL);
     RT_ASSERT(setup != RT_NULL);
 
-    if(device->dev_qualifier)
+    if(device->dev_qualifier && device->dcd->device_is_hs)
     {
         /* send device qualifier descriptor to endpoint 0 */
         rt_usbd_ep0_write(device, (rt_uint8_t*)device->dev_qualifier,
@@ -209,6 +209,9 @@ static rt_err_t _get_descriptor(struct udevice* device, ureq_t setup)
             break;
         case USB_DESC_TYPE_DEVICEQUALIFIER:
             _get_qualifier_descriptor(device, setup);
+            break;
+        case USB_DESC_TYPE_OTHERSPEED:
+            _get_config_descriptor(device, setup);
             break;
         default:
             rt_kprintf("unsupported descriptor request\n");
@@ -669,6 +672,8 @@ static rt_err_t _vendor_request(udevice_t device, ureq_t setup)
     static rt_uint8_t * usb_comp_id_desc = RT_NULL;
     static rt_uint32_t  usb_comp_id_desc_size = 0;
     usb_os_func_comp_id_desc_t func_comp_id_desc;
+    uintf_t intf;
+    ufunction_t func;
     switch(setup->bRequest)
     {
         case 'A':
@@ -704,6 +709,13 @@ static rt_err_t _vendor_request(udevice_t device, ureq_t setup)
                 }
                 rt_usbd_ep0_write(device, (void*)usb_comp_id_desc, setup->wLength);
             break;
+            case 0x05:
+                intf = rt_usbd_find_interface(device, setup->wValue & 0xFF, &func);
+                if(intf != RT_NULL)
+                {
+                    intf->handler(func, setup);
+                }
+                break;
         }
             
         break;
@@ -831,6 +843,10 @@ static rt_err_t _data_notify(udevice_t device, struct ep_msg* ep_msg)
         {
             EP_HANDLER(ep, func, ep->request.size);
         }
+        else
+        {
+            dcd_ep_read_prepare(device->dcd, EP_ADDRESS(ep), ep->request.buffer, ep->request.remain_size > EP_MAXPACKET(ep) ? EP_MAXPACKET(ep) : ep->request.remain_size);
+        }
     }
 
     return RT_EOK;
@@ -939,6 +955,7 @@ static rt_size_t rt_usbd_ep_write(udevice_t device, uep_t ep, void *buffer, rt_s
     RT_ASSERT(device->dcd != RT_NULL);
     RT_ASSERT(ep != RT_NULL);    
 
+    rt_enter_critical();
     maxpacket = EP_MAXPACKET(ep);
     if(ep->request.remain_size >= maxpacket)
     {
@@ -952,7 +969,7 @@ static rt_size_t rt_usbd_ep_write(udevice_t device, uep_t ep, void *buffer, rt_s
             ep->request.remain_size);
         ep->request.remain_size = 0;
     }
-
+    rt_exit_critical();
     return size;
 }
 
@@ -964,7 +981,7 @@ static rt_size_t rt_usbd_ep_read_prepare(udevice_t device, uep_t ep, void *buffe
     RT_ASSERT(buffer != RT_NULL);
     RT_ASSERT(ep->ep_desc != RT_NULL);
 
-    return dcd_ep_read_prepare(device->dcd, EP_ADDRESS(ep), buffer, size);
+    return dcd_ep_read_prepare(device->dcd, EP_ADDRESS(ep), buffer, size > EP_MAXPACKET(ep) ? EP_MAXPACKET(ep) : size);
 }
 
 /**
@@ -1832,7 +1849,7 @@ static rt_err_t rt_usbd_ep_assign(udevice_t device, uep_t ep)
     while(device->dcd->ep_pool[i].addr != 0xFF)
     {
         if(device->dcd->ep_pool[i].status == ID_UNASSIGNED && 
-            ep->ep_desc->bmAttributes == device->dcd->ep_pool[i].type)
+            ep->ep_desc->bmAttributes == device->dcd->ep_pool[i].type && (EP_ADDRESS(ep) & 0x80) == device->dcd->ep_pool[i].dir)
         {
             EP_ADDRESS(ep) |= device->dcd->ep_pool[i].addr;
             ep->id = &device->dcd->ep_pool[i];
@@ -2131,8 +2148,9 @@ static void rt_usbd_thread_entry(void* parameter)
             break;
         case USB_MSG_RESET:            
             RT_DEBUG_LOG(RT_DEBUG_USB, ("reset %d\n", device->state));
-            if (device->state == USB_STATE_ADDRESS)
+            if (device->state == USB_STATE_ADDRESS || device->state == USB_STATE_CONFIGURED)
                 _stop_notify(device);
+            device->state = USB_STATE_NOTATTACHED;
             break;
         case USB_MSG_PLUG_IN:
             device->state = USB_STATE_ATTACHED;

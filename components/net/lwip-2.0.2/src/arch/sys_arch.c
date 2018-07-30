@@ -69,12 +69,10 @@ static void tcpip_init_done_callback(void *arg)
 {
     rt_device_t device;
     struct eth_device *ethif;
-    ip_addr_t ipaddr, netmask, gw;
+    ip4_addr_t ipaddr, netmask, gw;
     struct rt_list_node* node;
     struct rt_object* object;
     struct rt_object_information *information;
-
-    extern struct rt_object_information rt_object_container[];
 
     LWIP_ASSERT("invalid arg.\n",arg);
 
@@ -86,7 +84,8 @@ static void tcpip_init_done_callback(void *arg)
     rt_enter_critical();
 
     /* for each network interfaces */
-    information = &rt_object_container[RT_Object_Class_Device];
+    information = rt_object_get_information(RT_Object_Class_Device);
+    RT_ASSERT(information != RT_NULL);
     for (node = information->object_list.next;
          node != &(information->object_list);
          node = node->next)
@@ -99,7 +98,7 @@ static void tcpip_init_done_callback(void *arg)
 
             /* leave critical */
             rt_exit_critical();
-			LOCK_TCPIP_CORE();
+            LOCK_TCPIP_CORE();
 
             netif_add(ethif->netif, &ipaddr, &netmask, &gw,
                       ethif, netif_device_init, tcpip_input);
@@ -122,7 +121,7 @@ static void tcpip_init_done_callback(void *arg)
                 netif_set_link_up(ethif->netif);
             }
 
-			UNLOCK_TCPIP_CORE();
+            UNLOCK_TCPIP_CORE();
             /* enter critical */
             rt_enter_critical();
         }
@@ -136,10 +135,20 @@ static void tcpip_init_done_callback(void *arg)
 /**
  * LwIP system initialization
  */
+extern int eth_system_device_init_private(void);
 int lwip_system_init(void)
 {
     rt_err_t rc;
     struct rt_semaphore done_sem;
+    static rt_bool_t init_ok = RT_FALSE;
+
+    if (init_ok)
+    {
+        rt_kprintf("lwip system already init.\n");
+        return 0;
+    }
+
+    eth_system_device_init_private();
 
     /* set default netif to NULL */
     netif_default = RT_NULL;
@@ -179,9 +188,11 @@ int lwip_system_init(void)
 #endif
     rt_kprintf("lwIP-%d.%d.%d initialized!\n", LWIP_VERSION_MAJOR, LWIP_VERSION_MINOR, LWIP_VERSION_REVISION);
 
+    init_ok = RT_TRUE;
+
     return 0;
 }
-INIT_COMPONENT_EXPORT(lwip_system_init);
+INIT_PREV_EXPORT(lwip_system_init);
 
 void sys_init(void)
 {
