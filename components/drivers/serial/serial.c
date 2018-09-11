@@ -43,7 +43,7 @@
 
 // #define DEBUG_ENABLE
 #define DEBUG_LEVEL         DBG_LOG
-#define DBG_SECTION_NAME    "[UART]"
+#define DBG_SECTION_NAME    "UART"
 #define DEBUG_COLOR
 #include <rtdbg.h>
 
@@ -393,7 +393,7 @@ static void rt_dma_recv_update_get_index(struct rt_serial_device *serial, rt_siz
     if (rx_fifo->is_full && len != 0) rx_fifo->is_full = RT_FALSE;
 
     rx_fifo->get_index += len;
-    if (rx_fifo->get_index > serial->config.bufsz)
+    if (rx_fifo->get_index >= serial->config.bufsz)
     {
         rx_fifo->get_index %= serial->config.bufsz;
     }
@@ -421,7 +421,6 @@ static void rt_dma_recv_update_put_index(struct rt_serial_device *serial, rt_siz
             /* force overwrite get index */
             if (rx_fifo->put_index >= rx_fifo->get_index)
             {
-                rx_fifo->get_index = rx_fifo->put_index;
                 rx_fifo->is_full = RT_TRUE;
             }
         }
@@ -437,10 +436,15 @@ static void rt_dma_recv_update_put_index(struct rt_serial_device *serial, rt_siz
                 rx_fifo->put_index %= serial->config.bufsz;
             }
             /* force overwrite get index */
-            rx_fifo->get_index = rx_fifo->put_index;
             rx_fifo->is_full = RT_TRUE;
         }
     }
+    
+    if(rx_fifo->is_full == RT_TRUE) 
+    {
+        rx_fifo->get_index = rx_fifo->put_index; 
+    } 
+    
     if (rx_fifo->get_index >= serial->config.bufsz) rx_fifo->get_index = 0;
 }
 
@@ -641,6 +645,13 @@ static rt_err_t rt_serial_open(struct rt_device *dev, rt_uint16_t oflag)
             serial->serial_rx = RT_NULL;
         }
     }
+    else
+    {
+        if (oflag & RT_DEVICE_FLAG_DMA_RX)
+            dev->open_flag |= RT_DEVICE_FLAG_DMA_RX;
+        else if (oflag & RT_DEVICE_FLAG_INT_RX)
+            dev->open_flag |= RT_DEVICE_FLAG_INT_RX;
+    }
 
     if (serial->serial_tx == RT_NULL)
     {
@@ -675,6 +686,13 @@ static rt_err_t rt_serial_open(struct rt_device *dev, rt_uint16_t oflag)
         {
             serial->serial_tx = RT_NULL;
         }
+    }
+    else
+    {
+        if (oflag & RT_DEVICE_FLAG_DMA_TX)
+            dev->open_flag |= RT_DEVICE_FLAG_DMA_TX;
+        else if (oflag & RT_DEVICE_FLAG_INT_TX)
+            dev->open_flag |= RT_DEVICE_FLAG_INT_TX;
     }
 
     /* set stream flag */
@@ -1058,6 +1076,18 @@ static rt_err_t rt_serial_control(struct rt_device *dev,
     return ret;
 }
 
+#ifdef RT_USING_DEVICE_OPS
+const static struct rt_device_ops serial_ops = 
+{
+    rt_serial_init,
+    rt_serial_open,
+    rt_serial_close,
+    rt_serial_read,
+    rt_serial_write,
+    rt_serial_control
+};
+#endif
+
 /*
  * serial register
  */
@@ -1076,12 +1106,16 @@ rt_err_t rt_hw_serial_register(struct rt_serial_device *serial,
     device->rx_indicate = RT_NULL;
     device->tx_complete = RT_NULL;
 
+#ifdef RT_USING_DEVICE_OPS
+    device->ops         = &serial_ops;
+#else
     device->init        = rt_serial_init;
     device->open        = rt_serial_open;
     device->close       = rt_serial_close;
     device->read        = rt_serial_read;
     device->write       = rt_serial_write;
     device->control     = rt_serial_control;
+#endif
     device->user_data   = data;
 
     /* register a character device */
@@ -1146,7 +1180,10 @@ void rt_hw_serial_isr(struct rt_serial_device *serial, int event)
                     (serial->config.bufsz - (rx_fifo->get_index - rx_fifo->put_index));
                 rt_hw_interrupt_enable(level);
 
-                serial->parent.rx_indicate(&serial->parent, rx_length);
+                if (rx_length)
+                {
+                    serial->parent.rx_indicate(&serial->parent, rx_length);
+                }
             }
             break;
         }
